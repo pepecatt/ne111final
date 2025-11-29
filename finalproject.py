@@ -1,11 +1,14 @@
-import io
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 from scipy import stats
 
-# Map names to scipy.stats distributions and number of parameters (shape parameters)
+# ---------- CONFIG ----------
+
+st.set_page_config(page_title="Histogram Fitting Webapp", layout="wide")
+
+# Map names to scipy.stats distributions and number of shape parameters
 DISTRIBUTIONS = {
     "Normal (norm)": (stats.norm, 0),
     "Exponential (expon)": (stats.expon, 0),
@@ -19,17 +22,15 @@ DISTRIBUTIONS = {
     "Pareto (pareto)": (stats.pareto, 1),
 }
 
-st.set_page_config(page_title="Histogram Fitter", layout="wide")
+# ---------- TITLE ----------
 
 st.title("Histogram Fitting Webapp")
 
-st.markdown(
-    "Upload or type data, fit different distributions, and see the histogram with the fitted curve. "
-    "You can also manually adjust parameters."
-)
+# ---------- 1. DATA INPUT (WITH SUBMIT BUTTON) ----------
 
-# 1. Data input area
-st.header("1. Data input")
+# initialize session state storage
+if "submitted_data" not in st.session_state:
+    st.session_state.submitted_data = None
 
 col_input_left, col_input_right = st.columns(2)
 
@@ -39,71 +40,70 @@ with col_input_left:
         "Enter numbers separated by spaces, commas, or new lines",
         value="",
         height=150,
+        key="manual_text_area"
     )
-
-    parse_button = st.button("Use typed data")
+    submit_manual = st.button("Submit typed data")
 
 with col_input_right:
     st.subheader("Upload CSV file")
     uploaded_file = st.file_uploader(
-        "Upload a CSV file with one column of numeric data, or pick a column afterwards",
+        "Upload a CSV file with one column of numeric data",
         type=["csv"],
+        key="csv_uploader"
     )
+    submit_csv = st.button("Use uploaded CSV")
 
-# Function to parse manual text
-def parse_manual_data(text: str) -> np.ndarray:
-    if not text.strip():
+def parse_manual_data(text: str):
+    text = text.strip()
+    if not text:
         return np.array([])
-    # Replace commas and newlines with spaces, then split
     cleaned = text.replace(",", " ").replace("\n", " ")
     parts = [p for p in cleaned.split(" ") if p.strip() != ""]
     try:
-        data = np.array(list(map(float, parts)))
-    except ValueError:
-        st.error("Could not parse some values. Please check your input.")
+        return np.array(list(map(float, parts)))
+    except:
+        st.error("Could not parse one or more values.")
         return np.array([])
-    return data
 
-data = np.array([])
+# ---------- HANDLE SUBMIT BUTTONS ----------
 
-# Prefer manually parsed data if button pressed
-if parse_button:
+# Manual submit
+if submit_manual:
     data = parse_manual_data(manual_text)
+    if data.size > 0:
+        st.session_state.submitted_data = data
+        st.success("Manual data submitted successfully!")
 
-# If no manual data or not using it, try CSV
-if data.size == 0 and uploaded_file is not None:
-    try:
-        df = pd.read_csv(uploaded_file)
-        if df.shape[1] == 1:
-            data = df.iloc[:, 0].dropna().values.astype(float)
-            st.success("Using the only column in CSV as data.")
-        else:
-            # Let the user choose a column
-            col_name = st.selectbox(
-                "Select a column from the uploaded CSV",
-                df.columns,
-            )
-            data = df[col_name].dropna().values.astype(float)
-            st.success(f"Using column '{col_name}' as data.")
-    except Exception as e:
-        st.error(f"Error reading CSV file: {e}")
+# CSV submit
+if submit_csv:
+    if uploaded_file is None:
+        st.error("Upload a CSV first.")
+    else:
+        try:
+            df = pd.read_csv(uploaded_file)
+            if df.shape[1] == 1:
+                st.session_state.submitted_data = df.iloc[:,0].dropna().values.astype(float)
+            else:
+                col_name = st.selectbox("Choose a column", df.columns)
+                st.session_state.submitted_data = df[col_name].dropna().values.astype(float)
+            st.success("CSV data submitted successfully!")
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
 
-if data.size == 0:
-    st.warning("No data loaded yet. Please type some numbers or upload a CSV.")
+# ---------- USE SUBMITTED DATA ----------
+
+data = st.session_state.submitted_data
+
+if data is None or data.size == 0:
+    st.warning("No valid data submitted yet.")
     st.stop()
 
-# Remove NaNs, infinities, etc
 data = data[np.isfinite(data)]
-if data.size == 0:
-    st.error("All data values are NaN or infinite. Please provide valid numbers.")
-    st.stop()
 
 st.write(f"Number of data points: {data.size}")
-st.write(f"Example values: {data[:10]}")
 
-# 2. Distribution choice and automatic fitting
-st.header("2. Distribution fitting")
 
+# ---------- FIT DISTRBITUION AND BINS ----------
 dist_name = st.selectbox(
     "Choose a distribution to fit",
     list(DISTRIBUTIONS.keys()),
@@ -112,10 +112,8 @@ dist_name = st.selectbox(
 
 dist, n_shapes = DISTRIBUTIONS[dist_name]
 
-# Choose number of histogram bins
 bins = st.slider("Number of histogram bins", min_value=5, max_value=100, value=30)
 
-# Automatic fit
 with st.spinner("Fitting distribution to data..."):
     try:
         fitted_params = dist.fit(data)
@@ -123,9 +121,6 @@ with st.spinner("Fitting distribution to data..."):
         st.error(f"Error fitting distribution: {e}")
         st.stop()
 
-st.subheader("Automatic fit parameters")
-
-# Interpret parameters as shape parameters, loc, scale
 if n_shapes == 0:
     # (loc, scale)
     loc_auto, scale_auto = fitted_params
@@ -135,17 +130,13 @@ else:
     loc_auto = fitted_params[-2]
     scale_auto = fitted_params[-1]
 
-st.write("Shape parameters:", shape_params_auto if shape_params_auto else "None")
-st.write("loc:", loc_auto)
-st.write("scale:", scale_auto)
+# ---------- VISUALIZATION & FIT QUALITY ----------
 
-# 3. Plot with automatic fit and compute error
-st.header("3. Visualization and fit quality")
-
-# Create x grid for PDF
-x_min = data.min()
-x_max = data.max()
+# x-range for PDF grid
+x_min = float(data.min())
+x_max = float(data.max())
 x_range = x_max - x_min
+
 if x_range <= 0:
     x_min -= 1.0
     x_max += 1.0
@@ -161,104 +152,112 @@ def pdf_from_params(dist_obj, x_vals, shape_params, loc, scale):
     else:
         return dist_obj.pdf(x_vals, loc=loc, scale=scale)
 
-# Automatic PDF
-pdf_auto = pdf_from_params(dist, x_grid, shape_params_auto, loc_auto, scale_auto)
-
-# Histogram (density normalized)
 hist_vals, bin_edges = np.histogram(data, bins=bins, density=True)
-bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[-1:1:-1])  
 bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-# Error metric: mean squared error between hist density at bin centers and pdf
+pdf_auto = pdf_from_params(dist, x_grid, shape_params_auto, loc_auto, scale_auto)
 pdf_at_centers_auto = pdf_from_params(dist, bin_centers, shape_params_auto, loc_auto, scale_auto)
-mse_auto = np.mean((hist_vals - pdf_at_centers_auto) ** 2)
-max_err_auto = np.max(np.abs(hist_vals - pdf_at_centers_auto))
+mse_auto = float(np.mean((hist_vals - pdf_at_centers_auto) ** 2))
+max_err_auto = float(np.max(np.abs(hist_vals - pdf_at_centers_auto)))
 
-# Plot automatic fit
-fig_auto, ax_auto = plt.subplots(figsize=(6, 4))
-ax_auto.hist(data, bins=bins, density=True, alpha=0.5, label="Data histogram")
-ax_auto.plot(x_grid, pdf_auto, "r-", label="Automatic fit")
-ax_auto.set_title(f"{dist_name} fit (automatic)")
-ax_auto.set_xlabel("Value")
-ax_auto.set_ylabel("Density")
-ax_auto.legend()
+# ---------- ROW 1: PARAMETERS / CONTROLS ----------
 
-st.pyplot(fig_auto)
+param_colA, param_colB = st.columns(2)
 
-st.markdown(
-    f"Automatic fit mean squared error: `{mse_auto:.5f}`, "
-    f"maximum absolute error: `{max_err_auto:.5f}`"
-)
+with param_colA:
+    #st.subheader("Automatic fit parameters")
 
-# 4. Manual fitting with sliders
-st.header("4. Manual fitting")
+    st.markdown(
+        "**Fitted parameters (automatic):**  \n"
+        f"- Shape parameters: `{shape_params_auto if shape_params_auto else 'None'}`  \n"
+        f"- loc: `{loc_auto:.4g}`  \n"
+        f"- scale: `{scale_auto:.4g}`"
+    )
 
-st.markdown(
-    "Use the sliders to manually adjust parameters of the current distribution and see how the curve changes."
-)
+with param_colB:
+    #st.subheader("Manual fitting controls")
 
-manual_expander = st.expander("Manual parameter controls", expanded=True)
-
-with manual_expander:
     manual_params = []
 
-    # Range guesses from automatic fit, provide reasonable slider ranges
-    # Shape parameters
+    # Shape parameter sliders
     for i, shp in enumerate(shape_params_auto):
+        base = abs(shp) if shp != 0 else 1.0
+        shp_min = float(max(shp - 3 * base, 0.001))
+        shp_max = float(shp + 3 * base)
         shp_val = st.slider(
             f"Shape parameter {i+1}",
-            min_value=float(shp * 0.1 if shp != 0 else 0.1),
-            max_value=float(shp * 3 if shp != 0 else 5.0),
+            min_value=shp_min,
+            max_value=shp_max,
             value=float(shp),
-            step=float(abs(shp) * 0.05 if shp != 0 else 0.1),
+            step=(shp_max - shp_min) / 100.0,
         )
         manual_params.append(shp_val)
 
-    # loc parameter
+    # loc slider
     loc_val = st.slider(
         "loc",
         min_value=float(x_min - x_range),
         max_value=float(x_max + x_range),
         value=float(loc_auto),
-        step=float(x_range / 100 if x_range > 0 else 0.1),
+        step=float((x_max - x_min) / 100.0 if x_range > 0 else 0.1),
     )
 
-    # scale parameter
-    scale_min = max(scale_auto * 0.1, 1e-3)
-    scale_max = scale_auto * 5 if scale_auto > 0 else 10
+    # scale slider
+    scale_base = scale_auto if scale_auto > 0 else 1.0
+    scale_min = float(scale_base * 0.1)
+    scale_max = float(scale_base * 5.0)
     scale_val = st.slider(
         "scale",
-        min_value=float(scale_min),
-        max_value=float(scale_max),
-        value=float(scale_auto),
-        step=float(scale_auto / 50 if scale_auto > 0 else 0.1),
+        min_value=scale_min,
+        max_value=scale_max,
+        value=float(scale_base),
+        step=(scale_max - scale_min) / 100.0,
     )
 
-# Manual PDF and error
 pdf_manual = pdf_from_params(dist, x_grid, manual_params, loc_val, scale_val)
-pdf_at_centers_manual = pdf_from_params(dist, bin_centers, manual_params, loc_val, scale_val)
-
-mse_manual = np.mean((hist_vals - pdf_at_centers_manual) ** 2)
-max_err_manual = np.max(np.abs(hist_vals - pdf_at_centers_manual))
-
-fig_manual, ax_manual = plt.subplots(figsize=(6, 4))
-ax_manual.hist(data, bins=bins, density=True, alpha=0.5, label="Data histogram")
-ax_manual.plot(x_grid, pdf_manual, "g-", label="Manual fit")
-ax_manual.set_title(f"{dist_name} fit (manual)")
-ax_manual.set_xlabel("Value")
-ax_manual.set_ylabel("Density")
-ax_manual.legend()
-
-st.pyplot(fig_manual)
-
-st.markdown(
-    f"Manual fit mean squared error: `{mse_manual:.5f}`, "
-    f"maximum absolute error: `{max_err_manual:.5f}`"
+pdf_at_centers_manual = pdf_from_params(
+    dist, bin_centers, manual_params, loc_val, scale_val
 )
+mse_manual = float(np.mean((hist_vals - pdf_at_centers_manual) ** 2))
+max_err_manual = float(np.max(np.abs(hist_vals - pdf_at_centers_manual)))
 
-st.header("5. Summary")
+# ---------- ROW 2: PLOTS ----------
 
-st.markdown(
-    "This app lets you compare automatic parameter fitting from SciPy with your own manual choices. "
-    "You can try different distributions from the drop-down menu and see how well they match your data."
-)
+plot_colA, plot_colB = st.columns(2)
+
+with plot_colA:
+    st.subheader("Automatic fit")
+
+    fig_auto, ax_auto = plt.subplots(figsize=(4, 3))
+    ax_auto.hist(data, bins=bins, density=True, alpha=0.5, label="Histogram")
+    ax_auto.plot(x_grid, pdf_auto, "r-", lw=2, label="Automatic PDF")
+    ax_auto.set_title(f"{dist_name} — automatic", fontsize=11)
+    ax_auto.set_xlabel("Value", fontsize=9)
+    ax_auto.set_ylabel("Density", fontsize=9)
+    ax_auto.legend(fontsize=8)
+    fig_auto.tight_layout()
+    st.pyplot(fig_auto, use_container_width=True)
+
+    st.markdown(
+        f"**Auto MSE:** `{mse_auto:.5f}`  \n"
+        f"**Auto max error:** `{max_err_auto:.5f}`"
+    )
+
+with plot_colB:
+    st.subheader("Manual fit")
+
+    fig_manual, ax_manual = plt.subplots(figsize=(4, 3))
+    ax_manual.hist(data, bins=bins, density=True, alpha=0.5, label="Histogram")
+    ax_manual.plot(x_grid, pdf_manual, "g-", lw=2, label="Manual PDF")
+    ax_manual.set_title(f"{dist_name} — manual", fontsize=11)
+    ax_manual.set_xlabel("Value", fontsize=9)
+    ax_manual.set_ylabel("Density", fontsize=9)
+    ax_manual.legend(fontsize=8)
+    fig_manual.tight_layout()
+    st.pyplot(fig_manual, use_container_width=True)
+
+    st.markdown(
+        f"**Manual MSE:** `{mse_manual:.5f}`  \n"
+        f"**Manual max error:** `{max_err_manual:.5f}`"
+    )
+
